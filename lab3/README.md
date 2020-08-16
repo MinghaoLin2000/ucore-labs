@@ -115,7 +115,67 @@ int do_pgfault(struct mm_struct *mm,uint32_t error_code,uintptr_t addr)
             if((ret=swap_in(mm,addr,&page))!=0)
             {
                 cprintf("swap_in in do_pgfault failed\n");
+                goto failed;
             }
+            page_insert(mm->pgdir,page,addr,perm);//建立虚拟地址和物理地址之间的对应的关系
+            swap_map_swappable(mm,addr,page,1);
+            page->pra_vaddr=addr;
+        }else
+        {
+            cprintf("no swap_init_ok but ptep is %x failed\n",*ptep);
+            goto failed;
         }
     }
+    ret=0;
+    failed:
+    return ret;
 }
+```
+# 练习2
+完成vmm.c中的do_pgfault函数，并且在实现FIFO算法的swap_fifo.c中完成map_swappable和swap_out_vistim函数。通过对swap的测试。注意：在LAB2 EXERCISE 2处填写代码。执行make　qemu后，如果通过check_swap函数的测试后，会有“check_swap() succeeded!”的输出，表示练习2基本正确。请在实验报告中简要说明你的设计实现过程。
+请在实验报告中回答如下问题：
+如果要在ucore上实现”extended clock页替换算法”请给你的设计方案，现有的swap_manager框架是否足以支持在ucore
+中实现此算法？如果是，请给你的设计方案。如果不是，请给出你的新的扩展和基此扩展的设计方案。并需要回答如下
+问题
+
+​ 需要被换出的页的特征是什么？
+​ 在ucore中如何判断具有这样特征的页？
+​ 何时进行换入和换出操作？
+
+##页错误异常
+页错误异常发生时,有可能是因为页面保存在swap区或者磁盘文件上造成的，所以我们需要通过页面分配解决这个问题，页面替换主要分为两个方面，页面换出和页面换入
+
+## 页面换出部分
+### 换出机制
+换出页面的时机相对复杂一些，针对不同的策略有不同的时机。ucore目前有两种策略，即积极换出策略和消极换出策略。积极换出策略是指操作系统周期性地主动把某些认为不常用的页换出硬盘，上，从而确保系统中总有一定数量的空闲也存在，这样当需要空闲页，基本上能够及时满足需求；消极换出策略是指，只是当试图得到空闲页时，发现当前没有空闲的物理页可供分配，这时才开始查找“不常用”页面，并把一个或多个这样的页换出到硬盘上。在实验三中的基本练习中，支持上述的第二种情况。对于第一种积极换出策略，即每隔1秒执行一次的实现积极的换出策略，可考虑在扩展练习中实现。对于第二种消极的换出策略，则是在ucore调用alloc_pages函数获取空闲页时，此函数如果发现无法从物理内存页分配器获得空闲页，就会进一步调用swap_out函数换出某页，实现一种消极的换出策略。
+
+## _fifo_map_swappable函数
+主要作用是将最近被用到的页面添加到算法所维护的次序队列
+```
+static int
+_fifo_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int swap_in)
+{
+    list_entry_t *head=(list_entry_t*) mm->sm_priv;
+    list_entry_t *entry=&(page->pra_page_link);
+    assert(entry != NULL && head != NULL);
+    list_add(head, entry);
+    return 0;
+}
+```
+##  _fifo_swap_out_victim()函数
+```
+static int
+_fifo_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
+{
+     list_entry_t *head=(list_entry_t*) mm->sm_priv;
+     assert(head != NULL);
+     assert(in_tick==0);
+     list_entry_t *le = head->prev;//用le指示需要被换出的页
+     assert(head!=le);
+     struct Page *p = le2page(le, pra_page_link//le2page宏可以根据链表元素获得对应的Page指针p  
+     list_del(le); //将进来最早的页面从队列中删除
+     assert(p !=NULL);
+     *ptr_page = p; //将进来最早的页面从队列中删除
+     return 0;
+}
+```
