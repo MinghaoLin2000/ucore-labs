@@ -46,3 +46,76 @@ struct mm_struct {
  };  
  ```
  mmap_list是双向链表头,链接了所有属于同一页目录表的虚拟内存空间,mmap_cache是指向当前正在使用的虚拟内存空间，由于操作系统执行的局部性原理，当前正在用到的虚拟空间在接下来的操作中可能还会用到,这时就不需要查链表，而是直接使用此指针就可找到下一次要用到的虚拟内存空间.pgdir所指向的就是mm_struct数据结构所维护的页表.通过访问pgdir可以查找某虚拟地址对应的页表项是否存在以及页表项的属性等. map_count记录mmap_List里面链接的vma_struct的个数.sm_priv指向用来链接记录页访问情况的链表头，这建立了mm_struct和后续要讲到的swap_manager之间的联系.
+
+##错误码errorCode
+产生页访问异常后,cpu把引起页访问异常的线性地址装到寄存器CR2,并给出错误码errorCode，说明了页访问异常的类型.ucore Os会把这个值保存在struct trapframe中tf_err成员变量中.而中断服务例程会调用页访问异常处理函数do_pgfault进行具体处理.这里页访问异常处理
+
+# 练习一
+完成do_pgfault（mm/vmm.c）函数，给未被映射的地址映射上物理页。设置访问权限 的时候需要参考页面所在 VMA 的权限，同时需要注意映射物理页时需要操作内存控制 结构所指定的页表，而不是内核的页表。注意：在LAB2 EXERCISE 1处填写代码。执行make　qemu后，如果通过check_pgfault函数的测试后，会有“check_pgfault() succeeded!”的输出，表示练习1基本正确。
+请在实验报告中简要说明你的设计实现过程。请回答如下问题：
+
+请描述页目录项（Pag Director Entry）和页表（Page Table Entry）中组成部分对ucore实现页替换算法的潜在用处。
+如果ucore的缺页服务例程在执行过程中访问内存，出现了页访问异常，请问硬件要做哪些事情？
+```
+int do_pgfault(struct mm_struct *mm,uint32_t error_code,uintptr_t addr)
+{
+    int ret=-E_INVAL;
+    struct vma_struct *vma=find_vma(mm,addr);//查询vma
+    pgfault_num++;
+    if(vma==NULL||vma->vm_start>addr)
+    {
+        cprintf("not valid addr %x,and can not find it in vma\n,addr);
+        goto faliled;
+    }
+    switch(error_code&3)
+    {
+        default:
+        case 2: 
+            if(!(vm->vm_flags&VM_WRITE))
+            {
+                cprintf("do_pgfaultfailed:error code flag= write AND not present,but the addr's vma cannot write\n");
+                goto failed;
+            }
+            break;
+        case 1:
+            cprintf("do_pgfault failed:error code flag=read AND present\n");
+            goto failed;
+        case 0:
+            if(!(vma->vm_flags&(VM_READ|VM_EXEC)))
+            {
+                cprintf("do_pgfault failed:error code flag=readd AND not present,but the addr's vma cannot read or exec\n");
+                goto failed;
+            }
+    }
+    uint32_t perm=PTE_U;
+    if(vma->vm_flags&VM_WRITE)
+    {
+        perm|=PTE_W;
+    }
+    addr=ROUNDDOWN(addr,PGSIZE);
+    ret =-E_NO_MEM;
+    pte_t *ptep=NULL;
+    if((ptep=get_pte(mm->pgdir,addr,1))==NULL)
+    {
+        cprintf("get_pte in do_pgfault failed\n");
+        goto failed;
+    }
+    if(*ptep==0)
+    {
+        if(pgdir_alloc_page(mm->pagdir,addr,perm)==NULL)
+        {
+            cprintf("pgdir_alloc in do_pgfault failed\n");
+            go failed;
+        }
+    }else
+    {
+        if(swap_init_ok)
+        {
+            struct Page *page=NULL; 
+            if((ret=swap_in(mm,addr,&page))!=0)
+            {
+                cprintf("swap_in in do_pgfault failed\n");
+            }
+        }
+    }
+}
