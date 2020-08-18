@@ -59,3 +59,113 @@ struct proc_struct {
 
 ##创建并执行内核线程
 建立进程控制块(alloc_proc),现在就可以通过进程控制块来创建具体的进程/线程了。首先,考虑最简单的内核线程,它通常只是内核中的一小段代码或者函数,没有自己的专属空间.这是由于在uCore OS启动后，已经对整个内核内存空间进行了管理，通过设置页表建立了内核虚拟空间(即boot_cr3指向的二级页表描述的空间)。所以ucore os内核中的所有线程都不需要再建立各自的页表，只需共享这个内核虚拟空间就可以访问整个物理内存，从这个角度看，，内核线程被ucore os内核这个大内核进程呢所管理。
+
+练习一.
+```
+static struct proc_start * alloc_proc(void)
+{
+    struct proc_start *proc=kmalloc(sizeof(struct proc_struct));
+    if(proc!=NULL)
+    {
+        proc->state=PROC_UNINIT;//进程为初始化状态
+        proc->pid=-1; //进程pid为-1
+        proc->runs=0; //初始化时间片
+        proc->kstack=0; //内核栈地址
+        proc->need_resched=0;//不需要调度
+        proc->parent=NULL;//父进程为空
+        proc->mm=NULL; //虚拟内存为空
+        memeset(&(proc->context),0,sizeof(struct context)); 初始化上下文
+        proc->tf=NULL; //中断帧指针为空
+        pro->cr3=boot_cr3;//页目录为内核页目录表基址
+        proc->flags=0; //标志位为0
+        memset(proc->name,0,PROC_NAME_LEN);//进程名为0
+    }
+    return proc;
+}
+context作用:
+进程的上下文，用于进程的切换。主要保存了前一个进程的现场,在ucore中，所有的进程在内核中也是相对独立的。使用context保存寄存器的目的就在于在内核态中能够进行上下文的切换。
+tf：中断帧的指针，总是指向内核栈的某个位置：当进程从用户空间跳回内核空间时，中断帧记录了进程在被中断前的状态。当内核需要跳回用户空间时，需要调整中断帧以恢复进程继续执行各寄存器的值，除此之外，ucore内核允许嵌套中断，因此为了保证嵌套中断发生时tf总是能指向当前的trapframe,ucore在内核栈上维护了tf的链
+
+练习2 do_fork()函数的实现
+```
+int do_fork(uint32_t clone_flags,uintptr_t stack,struct trapframe *tf)
+{
+    int ret=-E_NO_FREE_PROC;
+    struct proc_struct *proc; //定义新的进程
+    if(nr_process>=MAX_PROCESS)
+    {
+        goto fork_out;
+    }
+    ret=-E_NO_MEM;
+    if((proc=alloc_proc())==NULL) //分配内存失败
+    {
+        goto fork_out;
+    }
+    pro->parent=current;
+    if(setup_kstack(proc)){  //分配内核栈
+        goto bad_fork_cleanup_proc;
+    }
+    if(copy_mm(clone_flags,proc)!=0) //复制父进程的内存信息
+    {
+        goto bad_fork_cleannup_kstack;//返回
+    }
+    copy_thread(proc,stack,tf);//复制中断帧和上下文信息
+    bool intr_flag;
+    local_intr_save(intr_flag); //屏蔽中断,intr_flag=1
+    {
+        proc->pid=get_pid();//获取当前进程PID
+        hash_proc(proc);//建立hash映射
+        list_ad(&proc_list,&(proc->list_link);
+        nr_process++;//进程数加一
+    }
+    local_intr_restore(intr_flag);//恢复中断
+    wakeup_proc(proc);//唤醒新进程
+    ret=proc->pid;
+    fork_out:
+    return ret;
+    bad_fork_cleanup_kstack:
+    put_kstack(proc);
+    bad_fork_cleannup_proc:
+    kfree(proc);
+
+}
+在使用fork或clone系统调用是，产生的进程均会有内核分配一个唯一的pid，分配过程不允许中断。
+练习3：
+分析schedule函数，这里使用的FIFO调度算法
+```
+/* 宏定义:
+   #define le2proc(le, member)         \
+    to_struct((le), struct proc_struct, member)*/
+void
+schedule(void) {
+    bool intr_flag; //定义中断变量
+    list_entry_t *le, *last; //当前list，下一list
+    struct proc_struct *next = NULL; //下一进程
+    local_intr_save(intr_flag); //中断禁止函数
+    {
+        current->need_resched = 0; //设置当前进程不需要调度
+      //last是否是idle进程(第一个创建的进程),如果是，则从表头开始搜索
+      //否则获取下一链表
+        last = (current == idleproc) ? &proc_list : &(current->list_link);
+        le = last; 
+        do { //一直循环，直到找到可以调度的进程
+            if ((le = list_next(le)) != &proc_list) {
+                next = le2proc(le, list_link);//获取下一进程
+                if (next->state == PROC_RUNNABLE) {
+                    break; //找到一个可以调度的进程，break
+                }
+            }
+        } while (le != last); //循环查找整个链表
+        if (next == NULL || next->state != PROC_RUNNABLE) {
+            next = idleproc; //未找到可以调度的进程
+        }
+        next->runs ++; //运行次数加一
+        if (next != current) {
+            proc_run(next); //运行新进程,调用proc_run函数
+        }
+    }
+    local_intr_restore(intr_flag); //允许中断
+}
+```
+而switch_to 函数主要完成上下文的切换，先保存上下文的寄存器值，再将下一个进程的上下文换进来。
+proc_函数主要是修改内核栈
