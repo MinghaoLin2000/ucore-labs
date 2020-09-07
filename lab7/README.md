@@ -414,3 +414,73 @@ function_in_monitor （…）
 
 请在实验报告中给出给用户态进程/线程提供信号量机制的设计方案，并比较说明给内核级提供信号量机制的异同。
 
+对于V操作和P操作，分别用up和down函数来对应。
+down()函数：
+先关掉中断，然后判断当前的信号量的value是否大于0，如果是>0,则表明可以获得信号，故让value减一，并打开中断返回即可；如果不是>0,则表明无法获得信号量，故需要将当前的进程加入到等待队列中，并打开中断，然后运行调度器选择另外一个进程执行。如果被V操作唤醒，则把自身关联的wait从等待队列中删除(此过程需要先关中断，完成后开中断)
+up()函数:
+首先关中断，如果信号量对应的wait_queue中没有进程在等待，直接把信号量的value加一，然后开中断返回，如果有进程在等待且进程等待的原因是semophore设置的，则调用wakeup_wait函数将waitqueue中等待的第一个wait删除，且把此wait关联的进程唤醒，最后开中断返回
+
+用户态进程/线程的信号量的数据结构和内核级的是一样的。对于用户态的线程/进程使用信号量机制，应该首先通过系统调用进行sem初始化，设置sem.value以及sem.wait_queue,而在初始化之后，在使用这个信号量时，通过pv操作，通过系统调用进入到内核处理，是否等待和释放资源.
+不同:在用户态使用信号量时，需要进行系统调用进入内核态进行操作。
+练习2: 完成内核级条件变量和基于内核级条件变量的哲学家就餐问题
+首先掌握管程机制，然后基于信号量实现完成条件变量实现，然后用管程机制实现哲学家就餐问题的解决方案（基于条件变量）。执行：make grade 。如果所显示的应用程序检测都输出ok，则基本正确。如果只是某程序过不去，比如matrix.c，则可执行make run-matrix 命令来单独调试它。大致执行结果可看附录。（使用的是qemu-1.0.1）。
+
+请在实验报告中给出内核级条件变量的设计描述，并说其大致执行流流程。
+
+请在实验报告中给出给用户态进程/线程提供条件变量机制的设计方案，并比较说明给内核级提供条件变量机制的异同。
+哲学家问题的数据结构
+```
+struct proc_struct *philosopher_proc_condvar[N];//N个哲学家
+int state_condvar[N]; //哲学家的状态
+monitor_t mt, *mtp=&mt;
+```
+信号量实现
+```
+semphore_t mutex 临界区互斥信号量
+semphore_t s[N] 每个哲学家一个信号量
+```
+试图得到叉子
+void phi_test_condvar(i)
+{
+    if(state_condvar[i]==HUNGRY&&state_condvar[LEFT]!=EATING&&state_condvar[RIGHT]!=EATING)
+    {
+        cprintf("phi_test_condvar:state_condvar[%d] will eating\n",i);
+        state_condvar[i]=EATING;//改变自己的状态为eating
+        cprintf("phi_test_condvar:signal self_cv[%d],i);
+        cond_signal(&mtp->cv[i]);
+    }
+}
+拿叉子
+void phi_take_forks_condvar(int i)
+{
+    down(&(mtp->mutex));//通过P操作进入临界区
+    state_condvar[i]=HUNGRY;//记录哲学家i是否饿
+    phi_test_condvar(i);//试图拿到叉子
+    if(state_condvar[i]!=EATING)
+    {
+        cprintf("phi_take_forks_condvar:%d didn't get fork and will wait\n");
+        cond_wait(&mtp->cv[i]);
+    }
+    if(mtp->next_count>0)
+    {
+        up(&mtp->next);
+    }else
+    {
+        up(&(mtp->mutex));
+    }
+}
+放叉子
+void phi_put_forks_condvar(int i)
+{
+    down(&(mtp->mutex)); //通过P操作进入临界区
+    state_condvar[i]=THINKING;//记录进餐结束的状态
+    phi_test_condvar[LEFT];//看一下左边哲学家现在是否能进餐
+    phi_test_condvar[RIGHT];//看一下右边哲学家现在是否能进餐
+    if(mtp->next_count>0)
+    {
+        up(&(mtp->next));
+    }else
+    {
+        up(&(mtp->mutex));
+    }
+}
